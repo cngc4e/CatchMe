@@ -1,37 +1,3 @@
-local linkedlist 
-do
-	-- linked list library by Leafileaf
-	linkedlist = {
-		push_front = function( ll , v )
-			local n = {v=v,next=ll.__front}
-			if not ll.__back then ll.__back = n end
-			ll.__front = n
-			ll.n = ll.n + 1
-		end,
-		push_back = function( ll , v )
-			local n = {v=v}
-			if not ll.__front then ll.__front = n end
-			if ll.__back then ll.__back.next = n end
-			ll.__back = n
-			ll.n = ll.n + 1
-		end,
-		pop_front = function( ll )
-			local v = ll.__front.v
-			ll.__front = ll.__front.next
-			if not ll.__front then ll.__back = nil end
-			ll.n = ll.n - 1
-			return v
-		end,
-		front = function( ll )
-			return ll.__front.v
-		end,
-		new = function( ll )
-			return setmetatable( {n=0} , ll )
-		end
-	}
-	linkedlist.__index = linkedlist
-end
-
 local PairTable
 do
     local function cnext(tbl, k)
@@ -92,11 +58,13 @@ local UP_ONLY = 2
 local DOWN_UP = 3
 
 local roundv = {}
---local toRespawn = linkedlist:new()
 
 local players = {}
 local Player = {}
 do
+    local DASH_SPEED = 60
+    local DASH_COOLDOWN = 1000
+
     Player.linkMice = function(self, pn)
         if not players[pn] then return end
         if self.linked_mice[pn] then return end  -- already linked
@@ -131,18 +99,32 @@ do
         self.linked_mice = PairTable:new()
     end
 
-    --[[Player.doDash = function(self)
-        if not self.next_dash or os.time() >= self.next_dash then
-            self.next_dash = os.time() + 3000
-            tfm.exec.movePlayer(self.pn, 0, 0, true, xSpeed, ySpeed, speedOffset )
+    Player.doDash = function(self, direction_right)
+        if direction_right == nil then
+            direction_right = self.facing_right
         end
-    end]]
+        local p = room.playerList[self.pn]
+        if (not self.next_dash or os.time() >= self.next_dash)
+                and math.abs(p.vx) < DASH_SPEED then
+            self.next_dash = os.time() + DASH_COOLDOWN
+            local vx = (direction_right and 1 or -1) * DASH_SPEED
+            tfm.exec.movePlayer(self.pn, 0, 0, true, vx, 0, false)
+        end
+    end
+
+    Player.newGameResetVars = function(self)
+        self.next_dash = nil
+        self.next_catch = nil
+        self.facing_right = true
+    end
 
     Player.new = function(pn)
         return setmetatable({
             pn = pn,
             linked_mice = PairTable:new(),
-            --next_dash = nil,
+            next_dash = nil,
+            next_catch = nil,
+            facing_right = true,
         }, Player)
     end
 
@@ -205,6 +187,8 @@ local catchMice = function(pn)
     tfm.exec.respawnPlayer(pn)
     players[police]:linkMice(pn)
 
+    tfm.exec.chatMessage(string.format("<J>%s was caught by the police! shame.", pn))
+
     -- Check all mice caught
     if players[police].linked_mice:len() >= pL.normal:len() then
         tfm.exec.chatMessage("<J>The Police caught everyone!")
@@ -244,27 +228,39 @@ eventLoop = function(elapsed, remaining)
     if remaining <= 0 then
         eventTimesUp(elapsed)
     end
-
-    --[[if roundv.phase < PHASE_TIMESUP and toRespawn.n > 0 then
-		local flag
-		repeat
-			local r = toRespawn:front()
-			flag = false
-			if os.time() >= r[2] then
-				flag = true
-				tfm.exec.respawnPlayer(r:pop_front()[1])
-			end
-		until not flag or r.n <= 0
-	end]]
 end
 
 local keys = {
+    [0] = {
+        func = function(pn, d, x, y)  -- Left
+            players[pn].facing_right = false
+        end,
+        trigger = DOWN_ONLY
+    },
+    [2] = {
+        func = function(pn, d, x, y)  -- Right
+            players[pn].facing_right = true
+        end,
+        trigger = DOWN_ONLY
+    },
+    [16] = {
+        func = function(pn, d, x, y)  -- SHIFT
+            if pn ~= roundv.police then return end
+            players[pn]:doDash()
+            for name in players[pn].linked_mice:pairs() do
+                players[name]:doDash(players[pn].facing_right)
+            end
+        end,
+        trigger = DOWN_ONLY
+    },
     [32] = {
         func = function(pn, d, x, y)  -- SPACEBAR
             if pn ~= roundv.police then return end
+            if players[pn].next_catch and os.time() < players[pn].next_catch then return end
+            players[pn].next_catch = os.time() + 500
             for name in pL.normal:pairs() do
                 local p = room.playerList[name]
-                if p and not players[pn].linked_mice[name] and pythag(p.x, p.y, x, y, 11) then
+                if p and not players[pn].linked_mice[name] and pythag(p.x, p.y, x, y, 10) then
                     catchMice(name)
                     break  -- only catch one at a time
                 end
@@ -299,6 +295,10 @@ eventNewGame = function()
     -- non-police players
     pL.normal = PairTable:new(pL.room)
     pL.normal:remove(roundv.police)
+
+    for name, player in pairs(players) do
+        player:newGameResetVars()
+    end
 
     tfm.exec.chatMessage(string.format("<J>%s is now the police! Scatter away!", roundv.police), nil)
     tfm.exec.chatMessage("<J>You are now the police! Press Spacebar to catch the mice!", roundv.police)
